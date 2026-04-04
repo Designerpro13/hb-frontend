@@ -2,17 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 
 const API_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
 
+const STORAGE_KEY = "access_token";
+const STORAGE_TYPE = localStorage;
+
 async function request(path, options = {}) {
-  const token = sessionStorage.getItem("access_token") || "";
+  const token = STORAGE_TYPE.getItem(STORAGE_KEY) || "";
+  
   const headers = {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    "X-Requested-With": "XMLHttpRequest",
+    ...(token && { Authorization: `Bearer ${token}` }),
     ...(options.headers || {})
   };
 
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers
+    headers,
+    credentials: "include"
   });
 
   if (!response.ok) {
@@ -28,21 +34,26 @@ async function request(path, options = {}) {
 }
 
 export default function App() {
-  const [tokenInput, setTokenInput] = useState("");
-  const [tokenReady, setTokenReady] = useState(Boolean(sessionStorage.getItem("access_token")));
+  const [usernameInput, setUsernameInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [tokenReady, setTokenReady] = useState(Boolean(STORAGE_TYPE.getItem(STORAGE_KEY)));
   const [items, setItems] = useState([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const canSubmit = useMemo(() => title.trim().length > 0 && description.trim().length > 0, [title, description]);
+  const canSubmit = title.length > 0 && description.length > 0;
 
   async function loadItems() {
     setError("");
     try {
       const data = await request("/api/items");
-      setItems(data);
+      if (data.items) {
+        setItems(data.items);
+      } else {
+        setItems(data);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -61,11 +72,12 @@ export default function App() {
     try {
       const data = await request("/api/login", {
         method: "POST",
-        body: JSON.stringify({ token: tokenInput.trim() })
+        body: JSON.stringify({ username: usernameInput, password: passwordInput })
       });
-      sessionStorage.setItem("access_token", data.access_token);
+      STORAGE_TYPE.setItem(STORAGE_KEY, data.access_token);
       setTokenReady(true);
-      setTokenInput("");
+      setUsernameInput("");
+      setPasswordInput("");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -82,11 +94,12 @@ export default function App() {
     setBusy(true);
     setError("");
     try {
-      await request("/api/items", {
+      const data = await request("/api/items", {
         method: "POST",
         body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim()
+          title: title,
+          description: description,
+          user_id: 1
         })
       });
       setTitle("");
@@ -113,7 +126,7 @@ export default function App() {
   }
 
   function onLogout() {
-    sessionStorage.removeItem("access_token");
+    STORAGE_TYPE.removeItem(STORAGE_KEY);
     setTokenReady(false);
     setItems([]);
   }
@@ -121,20 +134,27 @@ export default function App() {
   return (
     <main className="page">
       <section className="card">
-        <h1>Secure CRUD Demo</h1>
-        <p>This starter intentionally prioritizes secure defaults and explicit auth.</p>
+        <h1>CRUD Application</h1>
 
         {!tokenReady ? (
           <form className="stack" onSubmit={onLogin}>
-            <label htmlFor="token">API token</label>
+            <label htmlFor="username">Username</label>
             <input
-              id="token"
+              id="username"
+              type="text"
+              autoComplete="off"
+              value={usernameInput}
+              onChange={(e) => setUsernameInput(e.target.value)}
+              placeholder="Enter username"
+            />
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
               type="password"
               autoComplete="off"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              minLength={16}
-              required
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              placeholder="Enter password"
             />
             <button disabled={busy} type="submit">
               {busy ? "Checking..." : "Login"}
@@ -153,8 +173,7 @@ export default function App() {
                 id="title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                maxLength={120}
-                required
+                placeholder="Enter title"
               />
 
               <label htmlFor="description">Description</label>
@@ -162,9 +181,8 @@ export default function App() {
                 id="description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                maxLength={2000}
+                placeholder="Enter description"
                 rows={5}
-                required
               />
 
               <button disabled={busy || !canSubmit} type="submit">
@@ -172,21 +190,33 @@ export default function App() {
               </button>
             </form>
 
+            <h3>Items:</h3>
             <ul className="stack list">
-              {items.map((item) => (
-                <li key={item.id}>
-                  <h3>{item.title}</h3>
-                  <p>{item.description}</p>
-                  <button className="danger" disabled={busy} onClick={() => onDelete(item.id)} type="button">
-                    Delete
-                  </button>
-                </li>
-              ))}
+              {items && items.length > 0 ? (
+                items.map((item) => (
+                  <li key={item.id}>
+                    <h3>{item.title}</h3>
+                    <p>{item.description}</p>
+                    {item.password && (
+                      <p>Password: {item.password}</p>
+                    )}
+                    <button className="danger" disabled={busy} onClick={() => onDelete(item.id)} type="button">
+                      Delete
+                    </button>
+                  </li>
+                ))
+              ) : (
+                <p>No items</p>
+              )}
             </ul>
           </>
         )}
 
-        {error && <p className="error">{error}</p>}
+        {error && (
+          <div className="error">
+            <p><strong>Error:</strong> {error}</p>
+          </div>
+        )}
       </section>
     </main>
   );

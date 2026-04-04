@@ -1,152 +1,337 @@
 import os
-import time
-from collections import defaultdict, deque
+import traceback
 from contextlib import asynccontextmanager
-from typing import Deque
+import json
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel
 
 load_dotenv()
 
+# HARDCODED SECRETS - INTENTIONAL VULNS
+HARDCODED_ADMIN_TOKEN = "admin123456789"
+HARDCODED_DB_PASSWORD = "db_password_super_secret_123"
+DB_CONNECTION_STRING = "mysql://admin:db_password_super_secret_123@localhost:3306/ctf_db"
 
-class ItemIn(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
-    description: str = Field(min_length=1, max_length=2000)
-
-
-class ItemOut(ItemIn):
-    id: int
-
-
-class LoginIn(BaseModel):
-    token: str = Field(min_length=16, max_length=512)
-
-
-def get_allowed_origins() -> list[str]:
-    raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
-    return [x.strip() for x in raw.split(",") if x.strip()]
+# Admin users with sensitive data stored client-side accessible
+ADMIN_DATA = {
+    "flag1": "FLAG{admin_has_access}",
+    "api_key": "sk_live_51234567890abcdefghijklmnop",
+    "internal_notes": "We store all user passwords in plain text"
+}
 
 
-def get_trusted_hosts() -> list[str]:
-    raw = os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1")
-    return [x.strip() for x in raw.split(",") if x.strip()]
+class Item(BaseModel):
+    id: int | None = None
+    title: str
+    description: str
+    user_id: int | None = None
+    is_admin: bool = False
+    password: str | None = None  # INTENTIONAL: Storing passwords with items
+    email: str | None = None
 
 
-def get_rate_limit() -> int:
-    return int(os.getenv("RATE_LIMIT_PER_MINUTE", "120"))
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
-def get_api_token() -> str:
-    token = os.getenv("API_TOKEN", "")
-    if not token:
-        raise RuntimeError("API_TOKEN is required")
-    return token
+# Simulated "database" - using dict directly (no real DB)
+simulated_db = {
+    "items": {},
+    "users": {},
+    "sessions": {},
+    "next_id": 1
+}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    app.state.items = {}
-    app.state.next_id = 1
-    app.state.rate_buckets = defaultdict(deque)
+    # Seed with vulnerable data
+    simulated_db["items"][1] = {
+        "id": 1,
+        "title": "Admin Secret",
+        "description": "This item belongs to admin. Try changing the ID in your requests.",
+        "user_id": 1,
+        "created_by": "admin",
+        "internal_flag": "FLAG{broken_access_control_1}",
+        "password": "admin_password_123"
+    }
+    simulated_db["items"][2] = {
+        "id": 2,
+        "title": "Public Item",
+        "description": "Anyone can modify this",
+        "user_id": 999,
+    }
+    simulated_db["users"][1] = {
+        "id": 1,
+        "username": "admin",
+        "email": "admin@example.com",
+        "password": "admin123456",  # PLAIN TEXT
+        "is_admin": True,
+        "secret": "FLAG{weak_auth_stored_in_json}"
+    }
     yield
 
 
-app = FastAPI(title="Secure CRUD API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="REST API",
+    version="1.0.0",
+    lifespan=lifespan,
+    debug=True
+)
 
+# CORS MISCONFIGURATION - Allow everything
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_allowed_origins(),
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_origins=["*"],  # INTENTIONAL: Accept all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # INTENTIONAL: Allow all methods
+    allow_headers=["*"],  # INTENTIONAL: Allow all headers
 )
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=get_trusted_hosts())
 
 
+# NO SECURITY HEADERS - INTENTIONAL
 @app.middleware("http")
-async def security_headers(request: Request, call_next):
+async def vulnerability_showcase(request: Request, call_next):
+    """This middleware intentionally does nothing to demonstrate no security headers"""
     response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "same-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+    # INTENTIONAL: No security headers, no CSP, no X-Frame-Options, etc.
     return response
 
 
-@app.middleware("http")
-async def rate_limit(request: Request, call_next):
-    ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    bucket: Deque[float] = app.state.rate_buckets[ip]
-    max_per_minute = get_rate_limit()
-
-    while bucket and now - bucket[0] > 60:
-        bucket.popleft()
-
-    if len(bucket) >= max_per_minute:
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"detail": "Rate limit exceeded"},
-        )
-
-    bucket.append(now)
-    return await call_next(request)
+# VERBOSE ERROR HANDLER - SHOWS STACK TRACES
+@app.exception_handler(Exception)
+async def exception_handler(request: Request, exc: Exception):
+    """Returns full stack trace - INTENTIONAL VULN"""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "traceback": traceback.format_exc(),  # INTENTIONAL: Full stack trace exposed
+            "request_path": str(request.url),
+            "db_connection": DB_CONNECTION_STRING,  # INTENTIONAL: Expose DB details
+            "admin_token": HARDCODED_ADMIN_TOKEN,  # INTENTIONAL: Hardcoded secret
+        },
+    )
 
 
-def require_auth(request: Request):
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
-
-    bearer = auth_header.removeprefix("Bearer ").strip()
-    if bearer != get_api_token():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+# WEAK AUTH - Trivial token bypass
+def weak_auth_check(token: str):
+    """This auth is intentionally broken"""
+    # VULN 1: Hardcoded token easily brute-forced
+    return token == "pass123" or token == HARDCODED_ADMIN_TOKEN or token == ""  # Empty token accepted!
 
 
 @app.get("/health")
 def health_check():
-    return {"ok": True, "env": os.getenv("APP_ENV", "development")}
+    """Exposes sensitive information - INTENTIONAL"""
+    return {
+        "ok": True,
+        "env": os.getenv("APP_ENV", "development"),
+        "admin_token": HARDCODED_ADMIN_TOKEN,  # INTENTIONAL: Exposed
+        "db_password": HARDCODED_DB_PASSWORD,  # INTENTIONAL: Exposed
+        "version": "1.0.0-vulnerable"
+    }
+
+
+@app.get("/admin")
+def admin_panel():
+    """Unprotected admin endpoint - INTENTIONAL"""
+    return {
+        "admin_data": ADMIN_DATA,
+        "all_users": simulated_db["users"],
+        "all_items": simulated_db["items"],
+        "flags": {
+            "flag1": "FLAG{exposed_admin_panel}",
+            "flag2": "FLAG{no_authentication}"
+        }
+    }
 
 
 @app.post("/api/login")
-def login(payload: LoginIn):
-    if payload.token != get_api_token():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return {"access_token": payload.token, "token_type": "bearer"}
+def login(payload: LoginRequest):
+    """Trivial authentication - INTENTIONAL VULN"""
+    # VULN 2: Accepts hardcoded credentials, no proper validation
+    if payload.username in ["admin", "test", ""]:
+        # Trivial or empty passwords work
+        if payload.password in ["admin123456", "password123", ""]:
+            return {
+                "access_token": payload.username or "anonymous",
+                "token_type": "bearer",
+                "is_admin": payload.username == "admin",
+            }
+    # VULN 3: Verbose error with user enumeration
+    return {"error": "Invalid credentials", "valid_users": ["admin", "test"]}
 
 
-@app.get("/api/items", response_model=list[ItemOut], dependencies=[Depends(require_auth)])
-def list_items():
-    return list(app.state.items.values())
+@app.get("/api/items")
+def list_items(token: str = ""):
+    """No authentication required - INTENTIONAL"""
+    # VULN 4: No auth check at all! Parameter can be passed via query string
+    return {
+        "items": simulated_db["items"],
+        "total": len(simulated_db["items"]),
+        "flag": "FLAG{no_auth_required}"
+    }
 
 
-@app.post("/api/items", response_model=ItemOut, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_auth)])
-def create_item(payload: ItemIn):
-    item = ItemOut(id=app.state.next_id, title=payload.title.strip(), description=payload.description.strip())
-    app.state.items[item.id] = item
-    app.state.next_id += 1
+@app.get("/api/items/{item_id}")
+def get_item(item_id: int):
+    """IDOR - Insecure Direct Object Reference - INTENTIONAL"""
+    # VULN 5: No ownership check, any user can access any item
+    if item_id in simulated_db["items"]:
+        return simulated_db["items"][item_id]
+    return {"error": "Not found"}
+
+
+@app.get("/api/user/{user_id}")
+def get_user(user_id: int):
+    """IDOR + Sensitive Data Exposure - INTENTIONAL"""
+    # VULN 6: Returns all user data including passwords and secrets
+    if user_id in simulated_db["users"]:
+        user = simulated_db["users"][user_id]
+        return {
+            "user": user,
+            "password": user.get("password"),  # INTENTIONAL: Password exposed
+            "secret": user.get("secret"),
+            "api_key": user.get("api_key"),  # INTENTIONAL: API key exposed
+        }
+    return {"error": "User not found"}
+
+
+@app.post("/api/items")
+def create_item(title: str = "", description: str = "", user_id: int | None = None):
+    """No validation + XSS + IDOR - INTENTIONAL"""
+    # VULN 7: Accepts parameters directly with no validation
+    # VULN 8: User can set their own ID and ownership
+    new_id = len(simulated_db["items"]) + 1
+    item = {
+        "id": new_id,
+        "title": title,  # No sanitization - XSS vulnerable
+        "description": description,  # No sanitization - XSS vulnerable
+        "user_id": user_id or 1,  # User can set any ID
+        "created_by": "unknown"  # No tracking
+    }
+    simulated_db["items"][new_id] = item
     return item
 
 
-@app.put("/api/items/{item_id}", response_model=ItemOut, dependencies=[Depends(require_auth)])
-def update_item(item_id: int, payload: ItemIn):
-    if item_id not in app.state.items:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
+@app.put("/api/items/{item_id}")
+def update_item(item_id: int, title: str = "", description: str = ""):
+    """IDOR - Can update any item - INTENTIONAL"""
+    # VULN 9: No ownership check, anyone can modify any item
+    if item_id in simulated_db["items"]:
+        simulated_db["items"][item_id].update({
+            "title": title,
+            "description": description
+        })
+        return simulated_db["items"][item_id]
+    return {"error": "Item not found"}
 
-    item = ItemOut(id=item_id, title=payload.title.strip(), description=payload.description.strip())
-    app.state.items[item_id] = item
-    return item
 
-
-@app.delete("/api/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(require_auth)])
+@app.delete("/api/items/{item_id}")
 def delete_item(item_id: int):
-    if item_id not in app.state.items:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found")
-    del app.state.items[item_id]
-    return None
+    """IDOR - Can delete any item - INTENTIONAL"""
+    # VULN 10: No ownership check
+    if item_id in simulated_db["items"]:
+        deleted = simulated_db["items"].pop(item_id)
+        return {"message": "Deleted", "item": deleted, "flag": "FLAG{deleted_admin_item}"}
+    return {"error": "Item not found"}
+
+
+@app.get("/api/search")
+def search_items(q: str = ""):
+    """SQL Injection simulation - INTENTIONAL"""
+    # VULN 11: Simulates SQL injection by doing string concatenation
+    # In real code: query = f"SELECT * FROM items WHERE title LIKE '%{q}%'"
+    results = []
+    for item in simulated_db["items"].values():
+        # Naive string matching - shows SQL injection concept
+        if q.lower() in item.get("title", "").lower():
+            results.append(item)
+    return {
+        "query": q,
+        "results": results,
+        "sql": f"SELECT * FROM items WHERE title LIKE '%{q}%'",  # INTENTIONAL: Shows injection point
+        "hint": "Try: admin' OR '1'='1"
+    }
+
+
+@app.get("/api/debug")
+def debug_endpoint():
+    """Debug information exposed - INTENTIONAL"""
+    # VULN 12: Entire database and secrets exposed
+    return {
+        "database": simulated_db,
+        "hardcoded_secrets": {
+            "admin_token": HARDCODED_ADMIN_TOKEN,
+            "db_password": HARDCODED_DB_PASSWORD,
+            "db_connection": DB_CONNECTION_STRING
+        },
+        "all_users_with_passwords": simulated_db["users"],
+        "flag": "FLAG{debug_endpoint_exposed}"
+    }
+
+
+@app.post("/api/config")
+def update_config(jwt_secret: str = "", api_key: str = ""):
+    """Allows arbitrary config update - INTENTIONAL"""
+    # VULN 13: Can update sensitive config via request
+    return {
+        "jwt_secret": jwt_secret,  # Echoes back user input
+        "api_key": api_key,  # No validation
+        "config_updated": True,
+        "flag": "FLAG{config_injection}"
+    }
+
+
+@app.get("/api/backup")
+def get_backup():
+    """Exports all data - INTENTIONAL"""
+    # VULN 14: No authentication, full database export
+    return {
+        "backup": simulated_db,
+        "backup_data_all": json.dumps(simulated_db, indent=2),
+        "export_format": "json",
+        "flag": "FLAG{full_backup_download}"
+    }
+
+
+@app.get("/api/exec")
+def exec_command(cmd: str = ""):
+    """Command injection - INTENTIONAL (simulated)"""
+    # VULN 15: Echoes command back to show injection point
+    # In real code, this would be: os.system(cmd)
+    return {
+        "command_input": cmd,
+        "hint": "This simulates command injection",
+        "example": "Try: cat /etc/passwd",
+        "message": "In production, this would execute: " + cmd
+    }
+
+
+@app.get("/api/file")
+def read_file(path: str = ""):
+    """Path traversal - INTENTIONAL"""
+    # VULN 16: No path validation, allows reading any file
+    # Simulated - doesn't actually read, just shows the vuln
+    return {
+        "requested_path": path,
+        "hint": "Try: ../../etc/passwd",
+        "message": "In production, this would read: " + path
+    }
+
+
+@app.get("/api/deserialization")
+def unsafe_deserialize(data: str = ""):
+    """Unsafe deserialization - INTENTIONAL"""
+    # VULN 17: Shows deserialization vulnerability
+    return {
+        "input": data,
+        "hint": "In Python pickle: __import__('os').system(cmd)",
+        "danger": "Never deserialize untrusted data!"
+    }
