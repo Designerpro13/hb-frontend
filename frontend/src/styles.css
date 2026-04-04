@@ -1,0 +1,108 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #101727;
+  background: radial-gradient(circle at 10% 10%, #d4f4dd 0, #f7f6ef 35%, #f1e9db 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.card {
+  width: min(720px, 100%);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #d6d0c3;
+  border-radius: 16px;
+  padding: 1.25rem;
+  box-shadow: 0 18px 45px rgba(30, 30, 30, 0.1);
+}
+
+h1 {
+  margin-top: 0;
+}
+
+.stack {
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+textarea {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid #c6bfaf;
+  padding: 0.6rem 0.7rem;
+  background: #fffefb;
+}
+
+button {
+  width: fit-content;
+  border: 0;
+  border-radius: 10px;
+  padding: 0.5rem 0.9rem;
+  cursor: pointer;
+  background: #1f5f3b;
+  color: #ffffff;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: #1f5f3b;
+  border: 1px solid #1f5f3b;
+}
+
+button.danger {
+  background: #9b2c2c;
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+}
+
+.list li {
+  border: 1px solid #d5ccbe;
+  border-radius: 12px;
+  padding: 0.8rem;
+}
+
+.list h3,
+.list p {
+  margin: 0 0 0.5rem;
+}
+
+.error {
+  color: #9b2c2c;
+  font-weight: 600;
+}
