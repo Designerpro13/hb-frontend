@@ -1,5 +1,7 @@
 import os
 import traceback
+import uuid
+import logging
 from contextlib import asynccontextmanager
 import json
 
@@ -10,6 +12,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 load_dotenv()
+
+# Structured logger — diagnostic details go to server logs only, never to HTTP responses
+logger = logging.getLogger(__name__)
 
 # HARDCODED SECRETS - INTENTIONAL VULNS
 HARDCODED_ADMIN_TOKEN = "admin123456789"
@@ -81,7 +86,9 @@ app = FastAPI(
     title="REST API",
     version="1.0.0",
     lifespan=lifespan,
-    debug=True
+    # FIX (issue #2): debug must be False outside local development.
+    # Reading from APP_ENV so production deployments are safe by default.
+    debug=os.getenv("APP_ENV", "production") == "development",
 )
 
 # CORS MISCONFIGURATION - Allow everything
@@ -103,18 +110,27 @@ async def vulnerability_showcase(request: Request, call_next):
     return response
 
 
-# VERBOSE ERROR HANDLER - SHOWS STACK TRACES
+# FIX (issue #2): Safe exception handler — logs details server-side, returns only
+# a generic message + correlation ID to the caller.  No stack traces, no DB
+# connection strings, no secrets are ever sent in the HTTP response.
 @app.exception_handler(Exception)
 async def exception_handler(request: Request, exc: Exception):
-    """Returns full stack trace - INTENTIONAL VULN"""
+    """Returns a generic error with a correlation ID.  Diagnostic details are
+    logged on the server only — never included in the HTTP response."""
+    correlation_id = str(uuid.uuid4())
+    logger.error(
+        "Unhandled exception [%s] %s %s: %s\n%s",
+        correlation_id,
+        request.method,
+        request.url,
+        exc,
+        traceback.format_exc(),
+    )
     return JSONResponse(
         status_code=500,
         content={
-            "error": str(exc),
-            "traceback": traceback.format_exc(),  # INTENTIONAL: Full stack trace exposed
-            "request_path": str(request.url),
-            "db_connection": DB_CONNECTION_STRING,  # INTENTIONAL: Expose DB details
-            "admin_token": HARDCODED_ADMIN_TOKEN,  # INTENTIONAL: Hardcoded secret
+            "error": "An unexpected error occurred.",
+            "correlation_id": correlation_id,
         },
     )
 
