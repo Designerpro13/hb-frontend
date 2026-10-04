@@ -1,5 +1,7 @@
 import os
 import traceback
+import uuid
+import logging
 from contextlib import asynccontextmanager
 import json
 
@@ -11,10 +13,27 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-# HARDCODED SECRETS - INTENTIONAL VULNS
-HARDCODED_ADMIN_TOKEN = "admin123456789"
-HARDCODED_DB_PASSWORD = "db_password_super_secret_123"
-DB_CONNECTION_STRING = "mysql://admin:db_password_super_secret_123@localhost:3306/ctf_db"
+# FIX (issue #1): Secrets are now read from environment variables — never hardcoded.
+# Set ADMIN_TOKEN, DB_PASSWORD, and DB_CONNECTION_STRING in your .env file
+# (see .env.example).  The application fails fast with a clear error if any
+# required secret is missing, rather than falling back to a hardcoded default.
+logger = logging.getLogger(__name__)
+
+
+def _require_env(key: str) -> str:
+    """Read a required environment variable; raise if absent or empty."""
+    value = os.getenv(key, "")
+    if not value:
+        raise RuntimeError(
+            f"Required environment variable '{key}' is not set. "
+            "Add it to your .env file and restart the application."
+        )
+    return value
+
+
+ADMIN_TOKEN: str = _require_env("ADMIN_TOKEN")
+DB_PASSWORD: str = _require_env("DB_PASSWORD")
+DB_CONNECTION_STRING: str = _require_env("DB_CONNECTION_STRING")
 
 # Admin users with sensitive data stored client-side accessible
 ADMIN_DATA = {
@@ -81,7 +100,8 @@ app = FastAPI(
     title="REST API",
     version="1.0.0",
     lifespan=lifespan,
-    debug=True
+    # FIX (issue #1 + #2): debug must be False outside local development.
+    debug=os.getenv("APP_ENV", "production") == "development",
 )
 
 # CORS MISCONFIGURATION - Allow everything
@@ -103,38 +123,47 @@ async def vulnerability_showcase(request: Request, call_next):
     return response
 
 
-# VERBOSE ERROR HANDLER - SHOWS STACK TRACES
+# FIX (issue #1 + #2): Safe exception handler — logs details server-side only.
+# No stack traces, no DB connection strings, no secrets are sent in HTTP responses.
 @app.exception_handler(Exception)
 async def exception_handler(request: Request, exc: Exception):
-    """Returns full stack trace - INTENTIONAL VULN"""
+    """Returns a generic error with a correlation ID. Diagnostic details are
+    logged on the server only — never included in the HTTP response."""
+    correlation_id = str(uuid.uuid4())
+    logger.error(
+        "Unhandled exception [%s] %s %s: %s\n%s",
+        correlation_id,
+        request.method,
+        request.url,
+        exc,
+        traceback.format_exc(),
+    )
     return JSONResponse(
         status_code=500,
         content={
-            "error": str(exc),
-            "traceback": traceback.format_exc(),  # INTENTIONAL: Full stack trace exposed
-            "request_path": str(request.url),
-            "db_connection": DB_CONNECTION_STRING,  # INTENTIONAL: Expose DB details
-            "admin_token": HARDCODED_ADMIN_TOKEN,  # INTENTIONAL: Hardcoded secret
+            "error": "An unexpected error occurred.",
+            "correlation_id": correlation_id,
         },
     )
 
 
-# WEAK AUTH - Trivial token bypass
+# WEAK AUTH - Trivial token bypass (other vulns intentionally retained)
 def weak_auth_check(token: str):
-    """This auth is intentionally broken"""
-    # VULN 1: Hardcoded token easily brute-forced
-    return token == "pass123" or token == HARDCODED_ADMIN_TOKEN or token == ""  # Empty token accepted!
+    """This auth is intentionally broken (empty token still accepted),
+    but the compared secret now comes from the environment — not hardcoded."""
+    # FIX (issue #1): compare against env-sourced ADMIN_TOKEN, not a literal
+    return token == "pass123" or token == ADMIN_TOKEN or token == ""  # Empty token still accepted!
 
 
 @app.get("/health")
 def health_check():
-    """Exposes sensitive information - INTENTIONAL"""
+    """Basic health probe — does NOT expose secrets."""
+    # FIX (issue #1): admin_token and db_password are no longer returned.
+    # They are read from environment variables and must never appear in responses.
     return {
         "ok": True,
-        "env": os.getenv("APP_ENV", "development"),
-        "admin_token": HARDCODED_ADMIN_TOKEN,  # INTENTIONAL: Exposed
-        "db_password": HARDCODED_DB_PASSWORD,  # INTENTIONAL: Exposed
-        "version": "1.0.0-vulnerable"
+        "env": os.getenv("APP_ENV", "production"),
+        "version": "1.0.0",
     }
 
 
@@ -263,15 +292,11 @@ def search_items(q: str = ""):
 
 @app.get("/api/debug")
 def debug_endpoint():
-    """Debug information exposed - INTENTIONAL"""
-    # VULN 12: Entire database and secrets exposed
+    """Debug information exposed - INTENTIONAL (other vulns retained)"""
+    # FIX (issue #1): hardcoded_secrets block removed — values are now in env
+    # and must never be serialised into HTTP responses.
     return {
         "database": simulated_db,
-        "hardcoded_secrets": {
-            "admin_token": HARDCODED_ADMIN_TOKEN,
-            "db_password": HARDCODED_DB_PASSWORD,
-            "db_connection": DB_CONNECTION_STRING
-        },
         "all_users_with_passwords": simulated_db["users"],
         "flag": "FLAG{debug_endpoint_exposed}"
     }
